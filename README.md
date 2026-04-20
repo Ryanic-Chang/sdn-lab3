@@ -283,76 +283,76 @@ uv run -m controllers.task3.least_hops
 
 1. [`.venv/lib/python3.14/site-packages/os_ken/topology/switches.py`](.venv/lib/python3.14/site-packages/os_ken/topology/switches.py)的`PortData/__init__()`
 
-`PortData`记录交换机的端口信息，我们需要增加`self.delay`属性记录上述的`lldp_delay`
+    `PortData`记录交换机的端口信息，我们需要增加`self.delay`属性记录上述的`lldp_delay`
 
-`self.timestamp`为`LLDP`包在发送时被打上的时间戳，具体发送的逻辑查看源码
+    `self.timestamp`为`LLDP`包在发送时被打上的时间戳，具体发送的逻辑查看源码
 
-```python
-  class PortData(object):
-      def __init__(self, is_down, lldp_data):
-          super(PortData, self).__init__()
-          self.is_down = is_down
-          self.lldp_data = lldp_data
-          self.timestamp = None
-          self.sent = 0
-          self.delay = 0
-```
+    ```diff
+    class PortData(object):
+        def __init__(self, is_down, lldp_data):
+            super(PortData, self).__init__()
+            self.is_down = is_down
+            self.lldp_data = lldp_data
+            self.timestamp = None
+            self.sent = 0
+    +       self.delay = 0
+    ```
 
 2. [`.venv/lib/python3.14/site-packages/os_ken/topology/switches.py`](.venv/lib/python3.14/site-packages/os_ken/topology/switches.py)的`Switches/lldp_packet_in_handler()`
 
-`lldp_packet_in_handler()`处理接收到的`LLDP`包，在这里用收到`LLDP`报文的时间戳减去发送时的时间戳即为`lldp_delay`，由于`LLDP`报文被设计为经一跳后转给控制器，我们可将`lldp_delay`存入发送`LLDP`包对应的交换机端口
+    `lldp_packet_in_handler()`处理接收到的`LLDP`包，在这里用收到`LLDP`报文的时间戳减去发送时的时间戳即为`lldp_delay`，由于`LLDP`报文被设计为经一跳后转给控制器，我们可将`lldp_delay`存入发送`LLDP`包对应的交换机端口
 
-```python
-    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
-    def lldp_packet_in_handler(self, ev):
-        # add receive timestamp
-        recv_timestamp = time.time()
-        if not self.link_discovery:
-            return
+    ```diff
+        @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+        def lldp_packet_in_handler(self, ev):
+    +       # add receive timestamp
+    +       recv_timestamp = time.time()
+            if not self.link_discovery:
+                return
 
-        msg = ev.msg
-        try:
-            src_dpid, src_port_no = LLDPPacket.lldp_parse(msg.data)
-        except LLDPPacket.LLDPUnknownFormat:
-            # This handler can receive all the packets which can be
-            # not-LLDP packet. Ignore it silently
-            return
-        
-        # calc the delay of lldp packet
-        for port, port_data in self.ports.items():
-            if src_dpid == port.dpid and src_port_no == port.port_no:
-                send_timestamp = port_data.timestamp
-                if send_timestamp:
-                    port_data.delay = recv_timestamp - send_timestamp
-        
-        ...
-```
+            msg = ev.msg
+            try:
+                src_dpid, src_port_no = LLDPPacket.lldp_parse(msg.data)
+            except LLDPPacket.LLDPUnknownFormat:
+                # This handler can receive all the packets which can be
+                # not-LLDP packet. Ignore it silently
+                return
+            
+    +       # calc the delay of lldp packet
+    +       for port, port_data in self.ports.items():
+    +           if src_dpid == port.dpid and src_port_no == port.port_no:
+    +               send_timestamp = port_data.timestamp
+    +               if send_timestamp:
+    +                   port_data.delay = recv_timestamp - send_timestamp
+            
+            ...
+    ```
 
 3. 获取`lldp_delay`
 
-在你们需要完成的计算时延的`APP`中，利用`lookup_service_brick`获取到正在运行的`switches`的实例（即步骤1、2中被我们修改的类），按如下的方式即可获取相应的`lldp_delay`
+    在你们需要完成的计算时延的`APP`中，利用`lookup_service_brick`获取到正在运行的`switches`的实例（即步骤1、2中被我们修改的类），按如下的方式即可获取相应的`lldp_delay`
 
-```python
-    from os_ken.base.app_manager import lookup_service_brick
-    
-    ...
-    
-    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
-    def packet_in_hander(self, ev):
-        msg = ev.msg
-        dpid = msg.datapath.id
-        try:
-            src_dpid, src_port_no = LLDPPacket.lldp_parse(msg.data)
+    ```python
+        from os_ken.base.app_manager import lookup_service_brick
+        
+        ...
+        
+        @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+        def packet_in_hander(self, ev):
+            msg = ev.msg
+            dpid = msg.datapath.id
+            try:
+                src_dpid, src_port_no = LLDPPacket.lldp_parse(msg.data)
 
-            if self.switches is None:
-                self.switches = lookup_service_brick('switches')
+                if self.switches is None:
+                    self.switches = lookup_service_brick('switches')
 
-            for port in self.switches.ports.keys():
-                if src_dpid == port.dpid and src_port_no == port.port_no:
-                    lldp_delay[(src_dpid, dpid)] = self.switches.ports[port].delay
-        except:
-            return
-```
+                for port in self.switches.ports.keys():
+                    if src_dpid == port.dpid and src_port_no == port.port_no:
+                        lldp_delay[(src_dpid, dpid)] = self.switches.ports[port].delay
+            except:
+                return
+    ```
 
 ##### 运行拓扑
 
@@ -392,7 +392,7 @@ mininet> link s1 s4 up
 
 链路状态改变时，链路关联的端口状态也会变化，从而产生端口状态改变的事件，即`EventOFPPortStatus`，通过将此事件与你设计的处理函数绑定在一起，就可以获取状态改变的信息，执行相应的处理。
 
-`os_ken`自带的`EventOFPPortStatus`事件处理函数位于`.venv/lib/python3.14/site-packages/os_ken/controller/ofp_handler.py`中，部分代码截取在下方。你可以以此为例，在你的代码中实现你需要的`EventOFPPortStatus`事件处理函数。
+`os_ken`自带的`EventOFPPortStatus`事件处理函数位于[`.venv/lib/python3.14/site-packages/os_ken/controller/ofp_handler.py`](.venv/lib/python3.14/site-packages/os_ken/controller/ofp_handler.py)中，部分代码截取在下方。你可以以此为例，在你的代码中实现你需要的`EventOFPPortStatus`事件处理函数。
 
 ```python
 @set_ev_handler(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
