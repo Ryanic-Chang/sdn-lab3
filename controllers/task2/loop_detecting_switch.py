@@ -7,6 +7,7 @@ from os_ken.lib.packet import packet
 from os_ken.lib.packet import ethernet
 from os_ken.lib.packet import arp
 from os_ken.lib.packet import ether_types
+from os_ken import log
 
 ETHERNET = ethernet.ethernet.__name__
 ETHERNET_MULTICAST = "ff:ff:ff:ff:ff:ff"
@@ -18,9 +19,9 @@ class Switch_Dict(app_manager.OSKenApp):
 
     def __init__(self, *args, **kwargs):
         super(Switch_Dict, self).__init__(*args, **kwargs)
-        self.sw = {} #(dpid, src_mac, dst_ip)=>in_port, you may use it in mission 2
+        self.sw = {} #(dpid, src_mac, dst_ip)=>in_port, you may use it in task 2
         # maybe you need a global data structure to save the mapping
-        # just data structure in mission 1
+        # just data structure in task 1
         
 
     def add_flow(self, datapath, priority, match, actions, idle_timeout=0, hard_timeout=0):
@@ -68,10 +69,14 @@ class Switch_Dict(app_manager.OSKenApp):
         header_list = dict((p.protocol_name, p) for p in pkt.protocols if type(p) != str)
         if dst == ETHERNET_MULTICAST and ARP in header_list:
             pass
-        # you need to code here to avoid broadcast loop to finish mission 2
+        # you need to code here to avoid broadcast loop to finish task 2
         
         # self-learning
         # you need to code here to avoid the direct flooding
         # having fun
         # :)
-        # just code in mission 1
+        # just code in task 1
+
+if __name__ == '__main__':
+    log.init_log()
+    app_manager.AppManager.run_apps(["controllers.task2.loop_detecting_switch"])

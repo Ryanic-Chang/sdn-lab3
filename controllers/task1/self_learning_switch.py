@@ -5,6 +5,7 @@ from os_ken.controller.handler import set_ev_cls
 from os_ken.ofproto import ofproto_v1_3
 from os_ken.lib.packet import packet
 from os_ken.lib.packet import ethernet
+from os_ken import log
 
 class Switch(app_manager.OSKenApp):
     
@@ -56,3 +57,7 @@ class Switch(app_manager.OSKenApp):
         # You need to code here to avoid the direct flooding
         # Have fun!
         # :)
+
+if __name__ == '__main__':
+    log.init_log()
+    app_manager.AppManager.run_apps(["controllers.task1.self_learning_switch"])

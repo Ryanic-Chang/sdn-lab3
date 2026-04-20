@@ -3,6 +3,7 @@ from os_ken.controller import ofp_event
 from os_ken.controller.handler import MAIN_DISPATCHER, CONFIG_DISPATCHER
 from os_ken.controller.handler import set_ev_cls
 from os_ken.ofproto import ofproto_v1_3
+from os_ken import log
 
 class L2Switch(app_manager.OSKenApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -43,3 +44,7 @@ class L2Switch(app_manager.OSKenApp):
         out = parser.OFPPacketOut(
             datapath=dp, buffer_id=msg.buffer_id, in_port=msg.match['in_port'],actions=actions, data=msg.data)
         dp.send_msg(out)
+        
+if __name__ == '__main__':
+    log.init_log()
+    app_manager.AppManager.run_apps(["controllers.simple_switch"])
