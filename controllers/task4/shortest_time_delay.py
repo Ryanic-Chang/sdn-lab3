@@ -9,7 +9,7 @@ from os_ken.lib.packet import ether_types
 from os_ken import log
 
 # 引入 NetworkAwareness
-from controllers.network_awareness import NetworkAwareness
+from controllers.task4.network_awareness import NetworkAwareness
 
 ETHERNET_MULTICAST = "ff:ff:ff:ff:ff:ff"
 ARP = arp.arp.__name__
@@ -36,6 +36,58 @@ class ShortestTimeDelay(app_manager.OSKenApp):
             match=match, instructions=inst
         )
         datapath.send_msg(mod)
+        
+    def delete_flow(self, datapath):
+        """
+        利用 OFPFC_DELETE 清除路由相关的流表。
+        通过指定 eth_type，只删 IPv4 和 ARP 寻路流表，
+        不删空匹配，否则会把 NetworkAwareness 下发的默认 Table-Miss 流表删掉
+        """
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        
+        for eth_type in [ether_types.ETH_TYPE_IP, ether_types.ETH_TYPE_ARP]:
+            match = parser.OFPMatch(eth_type=eth_type)
+            mod = parser.OFPFlowMod(
+                datapath=datapath, 
+                command=ofproto.OFPFC_DELETE,
+                out_port=ofproto.OFPP_ANY, 
+                out_group=ofproto.OFPG_ANY,
+                match=match
+            )
+            datapath.send_msg(mod)
+            
+    @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
+    def port_status_handler(self, ev):
+        msg = ev.msg
+        dp = msg.datapath
+        ofproto = dp.ofproto
+        reason = msg.reason
+        port_no = msg.desc.port_no
+        na = self.network_awareness
+
+        # 检测到链路断开 (Link Down)
+        if reason == ofproto.OFPPR_DELETE or msg.desc.state & ofproto.OFPPS_LINK_DOWN:
+            self.logger.warning(f"Link Down detected: switch s{dp.id} port {port_no}")
+            
+            # 从 topo_map 中删除
+            link_nodes = na.port_link.get((dp.id, port_no))
+            if link_nodes and na.topo_map.has_edge(*link_nodes):
+                na.topo_map.remove_edge(*link_nodes)
+                self.logger.info(f"Instantly removed dead edge: {link_nodes}")
+
+            # 清除全网路由流表，强制所有交换机遇到包时重新发 PacketIn
+            for sw_dp in na.switch_info.values():
+                self.delete_flow(sw_dp)
+                
+        # 检测到链路恢复 (Link Up)
+        elif reason == ofproto.OFPPR_ADD or reason == ofproto.OFPPR_MODIFY:
+            if not (msg.desc.state & ofproto.OFPPS_LINK_DOWN):
+                self.logger.info(f"Link Up detected: switch s{dp.id} port {port_no}")
+                # 恢复时，只需清除流表
+                # 清除后，下次发包又会重新触发 PacketIn，从而走回原本最优的短路径
+                for sw_dp in na.switch_info.values():
+                    self.delete_flow(sw_dp)
 
     # 主机注册时的控制台输出，调用拓扑打印
     def register_host(self, dpid, in_port, ip):
@@ -207,7 +259,6 @@ class ShortestTimeDelay(app_manager.OSKenApp):
 
         self.logger.info(f"Optimal Path (Delay): {path_str} | Estimated Total Delay: {total_delay*1000:.2f} ms\n")
 
-
 if __name__ == '__main__':
     from os_ken import cfg
     import os_ken.topology.switches
@@ -215,6 +266,6 @@ if __name__ == '__main__':
     
     log.init_log()
     app_manager.AppManager.run_apps([
-        "controllers.shortest_time_delay",
+        "controllers.task4.shortest_time_delay",
         "os_ken.topology.switches"
     ])

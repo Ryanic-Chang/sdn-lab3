@@ -36,8 +36,13 @@ class NetworkAwareness(app_manager.OSKenApp):
         self.topo_thread = hub.spawn(self._get_topology)
 
 
-        self.weight = 'hop'
-
+        self.weight = 'delay'
+        # 初始化时延测量的数据结构与线程
+        self.echo_delay = {}  # dpid: echo_delay
+        self.lldp_delay = {}  # (src_dpid, dst_dpid): lldp_delay
+        self.switches = None
+        self.echo_thread = hub.spawn(self._send_echo_request)
+        self.delay_thread = hub.spawn(self._measure_delay)
 
     def add_flow(self, datapath, priority, match, actions):
         dp = datapath
@@ -83,6 +88,18 @@ class NetworkAwareness(app_manager.OSKenApp):
                 continue
             _hosts, _switches, _links = [str(x) for x in hosts], [str(x) for x in switches], [str(x) for x in links]
 
+            # 动态清理已断开链路
+            active_links = [(link.src.dpid, link.dst.dpid) for link in links]
+            edges_to_remove = []
+            for src, dst in self.topo_map.edges:
+                # 跳过主机节点，避免误删 register_host 绑定的主机
+                if not self.topo_map[src][dst].get('is_host', False):
+                    if (src, dst) not in active_links and (dst, src) not in active_links:
+                        edges_to_remove.append((src, dst))
+            
+            for src, dst in edges_to_remove:
+                self.topo_map.remove_edge(src, dst)
+
             for switch in switches:
                 self.port_info.setdefault(switch.dp.id, set())
                 # record all ports
@@ -107,7 +124,7 @@ class NetworkAwareness(app_manager.OSKenApp):
                 self.link_info[(link.dst.dpid, link.src.dpid)] = link.dst.port_no
                 self.topo_map.add_edge(link.src.dpid, link.dst.dpid, hop=1, is_host=False)
 
-            if self.weight == 'hop':
+            if self.weight == 'delay':
                 self.show_topo_map()
             hub.sleep(GET_TOPOLOGY_INTERVAL)
 
@@ -124,4 +141,61 @@ class NetworkAwareness(app_manager.OSKenApp):
         for src, dst in self.topo_map.edges:
             self.logger.info('{:^10s}      {:^10s}'.format(str(src), str(dst)))
         self.logger.info('\n')
+    
+    # 时延测量方法 
+    def _send_echo_request(self):
+        """周期性向下发 Echo Request，携带当前时间戳"""
+        while True:
+            for dp in self.switch_info.values():
+                parser = dp.ofproto_parser
+                data = str(time.time()).encode('utf-8')
+                echo_req = parser.OFPEchoRequest(dp, data=data)
+                dp.send_msg(echo_req)
+            hub.sleep(SEND_ECHO_REQUEST_INTERVAL)
 
+    @set_ev_cls(ofp_event.EventOFPEchoReply, [MAIN_DISPATCHER, CONFIG_DISPATCHER])
+    def echo_reply_handler(self, ev):
+        """处理 Echo Reply 报文，得出 Echo Delay"""
+        now = time.time()
+        try:
+            send_time = float(ev.msg.data)
+            echo_delay = now - send_time
+            self.echo_delay[ev.msg.datapath.id] = echo_delay
+        except:
+            pass
+
+    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+    def packet_in_hander(self, ev):
+        """处理 PacketIn 中的 LLDP 报文，提取经过 switches.py 计算的延迟"""
+        msg = ev.msg
+        dpid = msg.datapath.id
+        try:
+            src_dpid, src_port_no = LLDPPacket.lldp_parse(msg.data)
+            if self.switches is None:
+                self.switches = lookup_service_brick('switches')
+            for port in self.switches.ports.keys():
+                if src_dpid == port.dpid and src_port_no == port.port_no:
+                    self.lldp_delay[(src_dpid, dpid)] = self.switches.ports[port].delay
+        except:
+            return
+
+    def _measure_delay(self):
+        """周期性计算各个链路的总时延并更新至拓扑图的有权边"""
+        while True:
+            hub.sleep(GET_DELAY_INTERVAL)
+            for src, dst in self.topo_map.edges:
+                if self.topo_map[src][dst].get('is_host', False):
+                    continue
+                
+                # 提取参数
+                lldp_12 = self.lldp_delay.get((src, dst), 0)
+                lldp_21 = self.lldp_delay.get((dst, src), 0)
+                echo_1 = self.echo_delay.get(src, 0)
+                echo_2 = self.echo_delay.get(dst, 0)
+
+                # 公式计算
+                delay = (lldp_12 + lldp_21 - echo_1 - echo_2) / 2
+                delay = max(delay, 0)  # 防止出现负数
+                
+                # 更新权重
+                self.topo_map[src][dst]['delay'] = delay
